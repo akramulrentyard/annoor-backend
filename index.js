@@ -1,20 +1,27 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config();
+
+// Initialize connections
+require('./config/db');
+require('./config/redis');
 
 const authRoutes = require('./routes/authRoutes');
 const contentRoutes = require('./routes/contentRoutes');
 
 const app = express();
 
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Root route
+// Root endpoint
 app.get('/', (req, res) => {
   res.json({
     status: 'OK',
-    message: 'Annoor backend api is running'
+    message: 'Annoor backend api is running',
+    environment: process.env.NODE_ENV,
+    appUrl: process.env.APP_BASE_URL
   });
 });
 
@@ -33,8 +40,20 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: 'Something went wrong' });
 });
 
-// Start
-const PORT = process.env.PORT || 5000;
+// Start server
+const PORT = process.env.PORT || 3050;
+const LOCAL_URL = `http://localhost:${PORT}`; 
+
 app.listen(PORT, () => {
-  console.log(`Annoor backend api is running on port ${PORT}`);
+  console.log('');
+ 
+  console.log('Annoor Backend API is running');
+ 
+  console.log(`   Environment : ${process.env.NODE_ENV}`);
+  console.log(`   Port        : ${PORT}`);
+  console.log(`   Local URL   : ${LOCAL_URL}`);  
+
+  console.log(`   App URL     : ${process.env.APP_BASE_URL}`);
+ 
+  console.log('');
 });
