@@ -100,36 +100,57 @@ exports.resendOtp = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
-
 // ============================================
 // 4. Send OTP — Masjid Registration
 // ============================================
 exports.sendMasjidOtp = async (req, res) => {
-  const { name, email, address, contactPerson, agreedToTerms } = req.body;
+  const {
+    name,
+    email,
+    phone,
+    website,
+    streetAddress,
+    city,
+    state,
+    zipCode,
+    latitude,
+    longitude,
+    agreedToTerms
+  } = req.body;
 
   try {
+    // Required field validation
     if (!name || !email) {
       return res.status(400).json({ message: 'Masjid name and email are required' });
     }
-
-    if (!address || !contactPerson) {
-      return res.status(400).json({ message: 'Address and contact person are required' });
+    if (!phone) {
+      return res.status(400).json({ message: 'Phone number is required' });
     }
-
+    if (!streetAddress || !city || !state || !zipCode) {
+      return res.status(400).json({ message: 'Complete address is required' });
+    }
     if (!agreedToTerms) {
       return res.status(400).json({ message: 'You must agree to the terms' });
     }
 
+    // Email already exists?
     const exists = await pool.query('SELECT 1 FROM users WHERE email = $1', [email]);
     if (exists.rows.length) {
       return res.status(400).json({ message: 'This email is already registered. Please login.' });
     }
 
+    // Save OTP with full payload
     const otpCode = await otpService.saveOtp(email, 'masjid_registration', {
       name,
       email,
-      address,
-      contactPerson
+      phone,
+      website: website || null,
+      streetAddress,
+      city,
+      state,
+      zipCode,
+      latitude: latitude || null,
+      longitude: longitude || null
     });
 
     await sendOtpEmail(email, otpCode);
@@ -161,13 +182,24 @@ exports.verifyMasjidOtp = async (req, res) => {
       return res.status(400).json({ message: verify.message });
     }
 
-    const { name, address, contactPerson } = verify.payload;
+    const {
+      name,
+      phone,
+      website,
+      streetAddress,
+      city,
+      state,
+      zipCode,
+      latitude,
+      longitude
+    } = verify.payload;
 
     const client = await pool.connect();
 
     try {
       await client.query('BEGIN');
 
+      // Step 1: users table
       const userResult = await client.query(
         `INSERT INTO users (name, email, password_hash, role)
          VALUES ($1, $2, $3, 'masjid')
@@ -176,10 +208,29 @@ exports.verifyMasjidOtp = async (req, res) => {
       );
       const user = userResult.rows[0];
 
+      // Step 2: masjid_profiles table — all fields
       await client.query(
-        `INSERT INTO masjid_profiles (user_id, address, contact_person)
-         VALUES ($1, $2, $3)`,
-        [user.id, address, contactPerson]
+        `INSERT INTO masjid_profiles (
+          user_id, phone, website,
+          street_address, city, state, zip_code,
+          latitude, longitude,
+          address, contact_person
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [
+          user.id,
+          phone,
+          website,
+          streetAddress,
+          city,
+          state,
+          zipCode,
+          latitude,
+          longitude,
+          // backward compatibility
+          `${streetAddress}, ${city}, ${state} ${zipCode}`,
+          name
+        ]
       );
 
       await client.query('COMMIT');

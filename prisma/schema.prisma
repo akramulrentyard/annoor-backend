@@ -28,10 +28,21 @@ model User {
 }
 
 model MasjidProfile {
-  userId        Int     @id @map("user_id")
+  userId        Int      @id @map("user_id")
   address       String?
-  contactPerson String? @map("contact_person")
-  isVerified    Boolean @default(false) @map("is_verified")
+  contactPerson String?  @map("contact_person")
+
+  // ⬇️ নতুন field
+  phone         String?
+  website       String?
+  streetAddress String?  @map("street_address")
+  city          String?
+  state         String?
+  zipCode       String?  @map("zip_code")
+  latitude      Decimal? @db.Decimal(10, 8)
+  longitude     Decimal? @db.Decimal(11, 8)
+
+  isVerified    Boolean  @default(false) @map("is_verified")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
