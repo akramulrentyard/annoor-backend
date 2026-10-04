@@ -1,63 +1,29 @@
-# ============================================
-# Base Image
-# ============================================
 FROM node:22-alpine
 
-# ============================================
-# Install system dependencies
-# ============================================
-RUN apk add --no-cache wget openssl
-
-# ============================================
-# Working Directory
-# ============================================
 WORKDIR /app
 
-# ============================================
-# Copy package files
-# ============================================
+# Alpine এ openssl for caching
+RUN apk add --no-cache openssl
+
+# Dependencies
 COPY package*.json ./
 
-# ============================================
-# Copy Prisma files (needed for generate)
-# ============================================
+# Prisma files (needed for generate)
 COPY prisma ./prisma
 COPY prisma.config.js ./
 
-# ============================================
-# Install dependencies
-# (postinstall → prisma generate)
-# ============================================
-RUN npm install --omit=dev && \
-    npm cache clean --force
+RUN npm ci --omit=dev
 
-# ============================================
-# Copy application code
-# ============================================
 COPY . .
 
-# ============================================
-# Make entrypoint executable
-# ============================================
-RUN chmod +x /app/docker/entrypoint.sh
+# Entrypoint
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# ============================================
-# Expose Port
-# ============================================
+# Logs
+RUN mkdir -p logs
+
 EXPOSE 3050
 
-# ============================================
-# Health Check
-# ============================================
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD wget -qO- http://localhost:3050/ || exit 1
-
-# ============================================
-# Entrypoint
-# ============================================
-ENTRYPOINT ["/app/docker/entrypoint.sh"]
-
-# ============================================
-# Default Command (passed to entrypoint)
-# ============================================
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "index.js"]
