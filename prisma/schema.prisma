@@ -4,25 +4,24 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  // ⚠️ url নেই — prisma.config.js-এ
 }
 
 enum UserRole {
   user
   masjid
-
   @@map("user_role")
 }
 
 model User {
-  id           Int      @id @default(autoincrement())
-  name         String
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  role         UserRole @default(user)
-  createdAt    DateTime @default(now()) @map("created_at")
+  id            Int      @id @default(autoincrement())
+  name          String
+  email         String   @unique
+  passwordHash  String   @map("password_hash")
+  role          UserRole @default(user)
+  createdAt     DateTime @default(now()) @map("created_at")
 
   masjidProfile MasjidProfile?
-  // otpCodes relation removed — no FK in DB
 
   @@map("users")
 }
@@ -31,8 +30,6 @@ model MasjidProfile {
   userId        Int      @id @map("user_id")
   address       String?
   contactPerson String?  @map("contact_person")
-
-  // ⬇️ নতুন field
   phone         String?
   website       String?
   streetAddress String?  @map("street_address")
@@ -41,7 +38,6 @@ model MasjidProfile {
   zipCode       String?  @map("zip_code")
   latitude      Decimal? @db.Decimal(10, 8)
   longitude     Decimal? @db.Decimal(11, 8)
-
   isVerified    Boolean  @default(false) @map("is_verified")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

@@ -8,13 +8,16 @@ RUN apk add --no-cache openssl
 # Dependencies
 COPY package*.json ./
 
-# Prisma files (needed for generate)
+# Prisma files
 COPY prisma ./prisma
 COPY prisma.config.js ./
 
 RUN npm ci --omit=dev
 
 COPY . .
+
+# ⬇️ .env baked into image (same file)
+COPY .env .env
 
 # Entrypoint
 COPY docker-entrypoint.sh /usr/local/bin/
