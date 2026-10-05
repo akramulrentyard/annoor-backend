@@ -12,12 +12,14 @@ const { initializeDatabase } = require('./services/dbInitializer');
 // Routes
 const authRoutes = require('./routes/authRoutes');
 const contentRoutes = require('./routes/contentRoutes');
-const masjidRoutes = require('./routes/masjidRoutes');      
-const adminRoutes = require('./routes/adminRoutes');      
+const masjidRoutes = require('./routes/masjidRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const halalPlaceRoutes = require('./routes/halalPlaceRoutes');      // ⬅️ NEW
+const paymentRoutes = require('./routes/paymentRoutes');            // ⬅️ NEW
 
 const app = express();
-// Middleware
 
+// Middleware
 app.use(cors());
 app.use(express.json());
 
@@ -34,14 +36,15 @@ app.get('/', (req, res) => {
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api', contentRoutes);
-app.use('/api/masjid', masjidRoutes);     
-app.use('/api/admin', adminRoutes);       
+app.use('/api/masjid', masjidRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api', halalPlaceRoutes);                                  // ⬅️ NEW
+app.use('/api/payments', paymentRoutes);                            // ⬅️ NEW
 
 // 404
 app.use((req, res) => {
   res.status(404).json({ message: 'Route not found' });
 });
-
 
 // Error handler
 app.use((err, req, res, next) => {
@@ -49,29 +52,28 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: 'Something went wrong' });
 });
 
-// Start server (with DB initialization)
+// Start server
 const PORT = process.env.PORT || 3050;
 const LOCAL_URL = `http://localhost:${PORT}`;
 
 (async () => {
   try {
-    // Run DB initializer BEFORE server starts
     await initializeDatabase();
 
     app.listen(PORT, () => {
       console.log('');
-      
-      console.log('Annoor Backend API is running');
-      
+      console.log('════════════════════════════════════════════════════════════');
+      console.log('🚀 Annoor Backend API is running');
+      console.log('════════════════════════════════════════════════════════════');
       console.log(`   Environment : ${process.env.NODE_ENV}`);
       console.log(`   Port        : ${PORT}`);
       console.log(`   Local URL   : ${LOCAL_URL}`);
       console.log(`   App URL     : ${process.env.APP_BASE_URL || 'N/A'}`);
-     
+      console.log('════════════════════════════════════════════════════════════');
       console.log('');
     });
   } catch (err) {
-    console.error('Failed to start server:', err.message);
+    console.error('❌ Failed to start server:', err.message);
     process.exit(1);
   }
 })();

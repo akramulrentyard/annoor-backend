@@ -6,7 +6,10 @@ datasource db {
   provider = "postgresql"
 }
 
-// ENUM আপডেট — superadmin যোগ
+// ═══════════════════════════════════════════════
+// ENUMS
+// ═══════════════════════════════════════════════
+
 enum UserRole {
   user
   masjid
@@ -15,7 +18,6 @@ enum UserRole {
   @@map("user_role")
 }
 
-// Verification status enum
 enum VerificationStatus {
   pending
   approved
@@ -23,6 +25,33 @@ enum VerificationStatus {
 
   @@map("verification_status")
 }
+
+enum ListingStatus {
+  pending_payment
+  pending_admin
+  approved
+  rejected
+  expired
+
+  @@map("listing_status")
+}
+
+// ⬇️ NEW: Subscription action log
+enum SubscriptionAction {
+  created
+  renewed
+  upgraded
+  downgraded
+  cancelled
+  expired
+  reactivated
+
+  @@map("subscription_action")
+}
+
+// ═══════════════════════════════════════════════
+// MODELS
+// ═══════════════════════════════════════════════
 
 model User {
   id            Int      @id @default(autoincrement())
@@ -32,8 +61,15 @@ model User {
   role          UserRole @default(user)
   createdAt     DateTime @default(now()) @map("created_at")
 
-  masjidProfile MasjidProfile?
-  verifiedMasjids MasjidProfile[] @relation("VerifiedBy")
+  // Relations
+  masjidProfile        MasjidProfile?
+  verifiedMasjids      MasjidProfile[] @relation("VerifiedBy")
+  halalPlaces          HalalPlace[]    @relation("OwnerPlaces")
+  approvedPlaces       HalalPlace[]    @relation("ApprovedBy")
+  payments             Payment[]
+  createdPlans         Plan[]          @relation("PlanCreator")
+  updatedPlans         Plan[]          @relation("PlanUpdater")
+  subscriptionsCreated Subscription[]  @relation("SubscriptionCreator")   // ⬅️ NEW
 
   @@map("users")
 }
@@ -52,20 +88,20 @@ model MasjidProfile {
   longitude     Decimal? @db.Decimal(11, 8)
   isVerified    Boolean  @default(false) @map("is_verified")
 
-  // ⬇️ নতুন যোগ করুন
-  createdAt     DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  // Verification fields
   verificationStatus VerificationStatus @default(pending) @map("verification_status")
   verifiedBy         Int?               @map("verified_by")
   verifiedAt         DateTime?          @map("verified_at")
   rejectionReason    String?            @map("rejection_reason")
 
+  // Relations
   user           User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   verifiedByUser User? @relation("VerifiedBy", fields: [verifiedBy], references: [id])
 
   @@map("masjid_profiles")
 }
+
 model OtpCode {
   id        Int      @id @default(autoincrement())
   email     String
@@ -77,4 +113,168 @@ model OtpCode {
   createdAt DateTime @default(now()) @map("created_at")
 
   @@map("otp_codes")
+}
+
+model Plan {
+  id          Int     @id @default(autoincrement())
+  code        String  @unique
+  name        String
+  description String?
+  priceCents  Int     @map("price_cents")
+  currency    String  @default("USD")
+
+  // Flexible duration (in days)
+  durationDays Int    @map("duration_days")
+
+  features Json?
+
+  isActive   Boolean @default(true) @map("is_active")
+  isFeatured Boolean @default(false) @map("is_featured")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  // Auto-renewal (default ON)
+  autoRenewEnabled Boolean @default(true) @map("auto_renew_enabled")
+
+  deletedAt DateTime? @map("deleted_at")
+
+  createdBy Int?     @map("created_by")
+  updatedBy Int?     @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @default(now()) @map("updated_at")
+
+  // Relations
+  creator       User?          @relation("PlanCreator", fields: [createdBy], references: [id])
+  updater       User?          @relation("PlanUpdater", fields: [updatedBy], references: [id])
+  halalPlaces   HalalPlace[]
+  subscriptions Subscription[]
+
+  @@index([isActive])
+  @@index([code])
+  @@map("plans")
+}
+
+model HalalPlace {
+  id          Int     @id @default(autoincrement())
+  ownerId     Int     @map("owner_id")
+  name        String
+  category    String
+  description String?
+
+  // Location
+  streetAddress String?  @map("street_address")
+  city          String?
+  state         String?
+  zipCode       String?  @map("zip_code")
+  latitude      Decimal? @db.Decimal(10, 8)
+  longitude     Decimal? @db.Decimal(11, 8)
+
+  // Contact
+  phone   String?
+  email   String?
+  website String?
+
+  // Media
+  photos Json?
+
+  // Plan snapshot (frozen at purchase)
+  planId         Int?    @map("plan_id")
+  planCode       String? @map("plan_code")
+  planName       String? @map("plan_name")
+  planPriceCents Int?    @map("plan_price_cents")
+  planDuration   Int?    @map("plan_duration")
+  planFeatures   Json?   @map("plan_features")
+
+  // ⬇️ Auto-renewal
+  autoRenewEnabled     Boolean   @default(true) @map("auto_renew_enabled")
+  autoRenewCancelledAt DateTime? @map("auto_renew_cancelled_at")
+
+  // Status
+  status          ListingStatus @default(pending_payment)
+  isActive        Boolean       @default(false) @map("is_active")
+  rejectionReason String?       @map("rejection_reason")
+  approvedAt      DateTime?     @map("approved_at")
+  approvedBy      Int?          @map("approved_by")
+  expiresAt       DateTime?     @map("expires_at")
+
+  // ⬇️ Renewal tracking
+  renewedAt    DateTime? @map("renewed_at")
+  renewalCount Int       @default(0) @map("renewal_count")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @default(now()) @map("updated_at")
+
+  // Relations
+  owner         User           @relation("OwnerPlaces", fields: [ownerId], references: [id], onDelete: Cascade)
+  approver      User?          @relation("ApprovedBy", fields: [approvedBy], references: [id])
+  plan          Plan?          @relation(fields: [planId], references: [id], onDelete: SetNull)
+  payments      Payment[]
+  subscriptions Subscription[]
+
+  @@index([status])
+  @@index([category])
+  @@index([city])
+  @@index([ownerId])
+  @@index([planId])
+  @@map("halal_places")
+}
+
+model Payment {
+  id      Int  @id @default(autoincrement())
+  userId  Int  @map("user_id")
+  placeId Int? @map("place_id")
+  planId  Int? @map("plan_id")
+
+  planCode String? @map("plan_code")
+  planName String? @map("plan_name")
+
+  amount   Decimal @db.Decimal(10, 2)
+  currency String  @default("USD")
+
+  status String @default("pending")
+
+  // Stripe PaymentIntent
+  stripeSessionId     String? @unique @map("stripe_session_id")
+  stripePaymentIntent String? @map("stripe_payment_intent")
+  clientSecret        String? @map("client_secret")
+  metadata            Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @default(now()) @map("updated_at")
+
+  // Relations
+  user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place HalalPlace? @relation(fields: [placeId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([placeId])
+  @@index([status])
+  @@index([stripePaymentIntent])
+  @@map("payments")
+}
+
+// ⬇️ NEW: Subscription history/audit
+model Subscription {
+  id           Int                @id @default(autoincrement())
+  placeId      Int                @map("place_id")
+  planId       Int?               @map("plan_id")
+  action       SubscriptionAction
+  previousPlan String?            @map("previous_plan")
+  newPlan      String?            @map("new_plan")
+  amountCents  Int?               @map("amount_cents")
+  currency     String             @default("USD")
+  startedAt    DateTime           @default(now()) @map("started_at")
+  expiresAt    DateTime?          @map("expires_at")
+  metadata     Json?
+  createdBy    Int?               @map("created_by")
+  createdAt    DateTime           @default(now()) @map("created_at")
+
+  // Relations
+  place   HalalPlace @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  plan    Plan?      @relation(fields: [planId], references: [id], onDelete: SetNull)
+  creator User?      @relation("SubscriptionCreator", fields: [createdBy], references: [id])
+
+  @@index([placeId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("subscriptions")
 }
