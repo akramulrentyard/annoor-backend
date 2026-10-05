@@ -20,7 +20,6 @@ exports.changePlan = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Get current place
     const placeResult = await client.query(
       `SELECT 
         id, name, owner_id, plan_id, plan_code, plan_name,
@@ -45,7 +44,6 @@ exports.changePlan = async (req, res) => {
       });
     }
 
-    // Get new plan
     const planResult = await client.query(
       `SELECT * FROM plans 
        WHERE id = $1 AND is_active = TRUE AND deleted_at IS NULL`,
@@ -59,7 +57,6 @@ exports.changePlan = async (req, res) => {
 
     const newPlan = planResult.rows[0];
 
-    // Validate duration
     const finalDuration = durationDays || newPlan.duration_days;
     if (!VALID_DURATIONS.includes(finalDuration)) {
       await client.query('ROLLBACK');
@@ -68,16 +65,13 @@ exports.changePlan = async (req, res) => {
       });
     }
 
-    // Calculate price
     const dailyRate = newPlan.price_cents / newPlan.duration_days;
     const finalPrice = Math.round(dailyRate * finalDuration);
 
-    // Determine action type
     const action = finalPrice > (place.plan_price_cents || 0)
       ? 'upgraded'
       : 'downgraded';
 
-    // Log subscription change
     await client.query(
       `INSERT INTO subscriptions (
         place_id, plan_id, action, previous_plan, new_plan,
@@ -91,7 +85,6 @@ exports.changePlan = async (req, res) => {
       ]
     );
 
-    // Update place with new plan snapshot
     await client.query(
       `UPDATE halal_places SET
         plan_id = $1,
@@ -110,7 +103,6 @@ exports.changePlan = async (req, res) => {
       ]
     );
 
-    // Create PaymentIntent for the difference
     let paymentIntent = null;
     const requiresPayment = finalPrice > 0;
 
@@ -172,7 +164,7 @@ exports.changePlan = async (req, res) => {
 };
 
 // ============================================
-// 2. Toggle auto-renew
+// 2. Toggle auto-renew (with Stripe detach)
 // ============================================
 exports.toggleAutoRenew = async (req, res) => {
   const { placeId } = req.params;
@@ -187,45 +179,131 @@ exports.toggleAutoRenew = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const result = await client.query(
-      `UPDATE halal_places SET
-        auto_renew_enabled = $1,
-        auto_renew_cancelled_at = $2,
-        updated_at = NOW()
-       WHERE id = $3 AND owner_id = $4
-       RETURNING id, name, auto_renew_enabled, auto_renew_cancelled_at, expires_at`,
-      [
-        enabled,
-        enabled ? null : new Date(),
-        placeId,
-        req.user.id
-      ]
+    // Verify ownership
+    const placeResult = await client.query(
+      `SELECT id, name, plan_id, plan_code
+       FROM halal_places
+       WHERE id = $1 AND owner_id = $2`,
+      [placeId, req.user.id]
     );
 
-    if (!result.rows.length) {
+    if (!placeResult.rows.length) {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Place not found' });
     }
+    const place = placeResult.rows[0];
 
-    // Log action
-    const action = enabled ? 'reactivated' : 'cancelled';
+    // ═══════════════════════════════════════
+    // Case 1: ENABLE auto-renew
+    // ═══════════════════════════════════════
+    if (enabled === true) {
+      const cardCheck = await client.query(
+        `SELECT id FROM payments
+         WHERE place_id = $1
+           AND status = 'succeeded'
+           AND stripe_customer_id IS NOT NULL
+           AND stripe_payment_method_id IS NOT NULL
+         ORDER BY id DESC LIMIT 1`,
+        [placeId]
+      );
+
+      if (!cardCheck.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          message: 'No saved card. Make a new payment to enable auto-renew.',
+          requiresNewPayment: true
+        });
+      }
+
+      await client.query(
+        `UPDATE halal_places SET
+          auto_renew_enabled = TRUE,
+          auto_renew_cancelled_at = NULL,
+          updated_at = NOW()
+         WHERE id = $1`,
+        [placeId]
+      );
+
+      await client.query(
+        `INSERT INTO subscriptions (place_id, plan_id, action, previous_plan, created_by, created_at)
+         VALUES ($1, $2, 'reactivated', $3, $4, NOW())`,
+        [placeId, place.plan_id, place.plan_code, req.user.id]
+      );
+
+      await client.query('COMMIT');
+
+      return res.json({
+        message: 'Auto-renewal enabled',
+        autoRenew: true,
+        cardSaved: true
+      });
+    }
+
+    // ═══════════════════════════════════════
+    // Case 2: DISABLE auto-renew → detach card
+    // ═══════════════════════════════════════
+    const cardResult = await client.query(
+      `SELECT id, stripe_payment_method_id
+       FROM payments
+       WHERE place_id = $1
+         AND status = 'succeeded'
+         AND stripe_payment_method_id IS NOT NULL
+       ORDER BY id DESC LIMIT 1`,
+      [placeId]
+    );
+
+    const card = cardResult.rows[0];
+
+    // Stripe detach (outside transaction — external API)
+    if (card?.stripe_payment_method_id) {
+      try {
+        await stripe.paymentMethods.detach(card.stripe_payment_method_id);
+        console.log('✅ Stripe PM detached:', card.stripe_payment_method_id);
+      } catch (err) {
+        if (err.code !== 'resource_missing') {
+          console.warn('⚠️ Stripe detach warning:', err.message);
+        }
+        // Non-fatal — continue DB cleanup
+      }
+    }
+
+    // DB cleanup
     await client.query(
-      `INSERT INTO subscriptions (
-        place_id, action, created_by, created_at
-      ) VALUES ($1, $2, $3, NOW())`,
-      [placeId, action, req.user.id]
+      `UPDATE halal_places SET
+        auto_renew_enabled = FALSE,
+        auto_renew_cancelled_at = NOW(),
+        updated_at = NOW()
+       WHERE id = $1`,
+      [placeId]
+    );
+
+    await client.query(
+      `UPDATE payments SET
+        stripe_customer_id = NULL,
+        stripe_payment_method_id = NULL,
+        updated_at = NOW()
+       WHERE place_id = $1`,
+      [placeId]
+    );
+
+    await client.query(
+      `INSERT INTO subscriptions (place_id, plan_id, action, previous_plan, created_by, created_at)
+       VALUES ($1, $2, 'cancelled', $3, $4, NOW())`,
+      [placeId, place.plan_id, place.plan_code, req.user.id]
     );
 
     await client.query('COMMIT');
 
-    res.json({
-      message: enabled ? 'Auto-renewal enabled' : 'Auto-renewal disabled',
-      place: result.rows[0]
+    return res.json({
+      message: 'Auto-renewal cancelled. Card removed.',
+      autoRenew: false,
+      cardSaved: false
     });
+
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('toggleAutoRenew error:', err);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ message: 'Server error', detail: err.message });
   } finally {
     client.release();
   }
@@ -274,8 +352,8 @@ exports.getSubscriptionSummary = async (req, res) => {
     const place = await pool.query(
       `SELECT 
         id, name, plan_code, plan_name, plan_price_cents, plan_duration,
-        status, expires_at, auto_renew_enabled, renewed_at, renewal_count,
-        approved_at
+        status, expires_at, auto_renew_enabled, auto_renew_cancelled_at,
+        renewed_at, renewal_count, approved_at
        FROM halal_places
        WHERE id = $1 AND owner_id = $2`,
       [placeId, req.user.id]
@@ -287,7 +365,19 @@ exports.getSubscriptionSummary = async (req, res) => {
 
     const p = place.rows[0];
 
-    // Calculate days remaining
+    // Card saved status
+    const cardResult = await pool.query(
+      `SELECT 
+        (stripe_customer_id IS NOT NULL AND stripe_payment_method_id IS NOT NULL) AS card_saved
+       FROM payments
+       WHERE place_id = $1 AND status = 'succeeded'
+       ORDER BY id DESC LIMIT 1`,
+      [placeId]
+    );
+
+    const cardSaved = cardResult.rows[0]?.card_saved || false;
+
+    // Days remaining
     let daysRemaining = null;
     if (p.expires_at) {
       const diff = new Date(p.expires_at).getTime() - Date.now();
@@ -311,6 +401,8 @@ exports.getSubscriptionSummary = async (req, res) => {
       daysRemaining,
       autoRenew: {
         enabled: p.auto_renew_enabled,
+        cancelledAt: p.auto_renew_cancelled_at,
+        cardSaved,
         lastRenewedAt: p.renewed_at,
         renewalCount: p.renewal_count
       }
@@ -318,5 +410,23 @@ exports.getSubscriptionSummary = async (req, res) => {
   } catch (err) {
     console.error('getSubscriptionSummary error:', err);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ============================================
+// 5. Manual renewal trigger (testing)
+// ============================================
+exports.runRenewalsManually = async (req, res) => {
+  try {
+    const { processAutoRenewals } = require('../services/autoRenewService');
+    const result = await processAutoRenewals();
+    res.json({
+      message: 'Renewal process triggered',
+      ...result,
+      triggeredAt: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('runRenewalsManually error:', err);
+    res.status(500).json({ message: 'Renewal failed', detail: err.message });
   }
 };

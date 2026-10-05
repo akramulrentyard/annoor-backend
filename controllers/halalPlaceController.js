@@ -1,94 +1,56 @@
 const pool = require('../config/db');
 
-// ============================================
-// 1. Submit halal place (create only)
-// ============================================
+// ═══════════════════════════════════════════════════
+// USER — Submit business form (no plan yet)
+// ═══════════════════════════════════════════════════
 exports.submitHalalPlace = async (req, res) => {
   const {
     name, category, description,
-    streetAddress, city, state, zipCode, latitude, longitude,
-    phone, email, website,
-    photos,
-    planId
+    streetAddress, city, state, zipCode,
+    latitude, longitude,
+    phone, email, website, photos
   } = req.body;
 
-  if (!name || !category) return res.status(400).json({ message: 'Name and category required' });
-  if (!phone) return res.status(400).json({ message: 'Phone required' });
+  // ⚠️ NO planId validation here
+  if (!name || !category) {
+    return res.status(400).json({ message: 'Name and category required' });
+  }
+  if (!phone) {
+    return res.status(400).json({ message: 'Phone required' });
+  }
   if (!streetAddress || !city || !state || !zipCode) {
     return res.status(400).json({ message: 'Complete address required' });
   }
-  if (!planId) return res.status(400).json({ message: 'Plan is required' });
-
-  const client = await pool.connect();
 
   try {
-    await client.query('BEGIN');
-
-    const planResult = await client.query(
-      `SELECT * FROM plans 
-       WHERE id = $1 AND is_active = TRUE AND deleted_at IS NULL`,
-      [planId]
-    );
-
-    if (!planResult.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ message: 'Invalid or inactive plan' });
-    }
-
-    const plan = planResult.rows[0];
-
-    const placeResult = await client.query(
+    const { rows } = await pool.query(
       `INSERT INTO halal_places (
         owner_id, name, category, description,
         street_address, city, state, zip_code, latitude, longitude,
         phone, email, website, photos,
-        plan_id, plan_code, plan_name, plan_price_cents, plan_duration, plan_features,
         status
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14,
-        $15, $16, $17, $18, $19, $20,
-        'pending_payment'
-      ) RETURNING id, name, plan_code, plan_name, plan_price_cents, plan_duration`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'pending_payment')
+       RETURNING id, name, status, created_at`,
       [
         req.user.id, name, category, description || null,
         streetAddress, city, state, zipCode,
         latitude || null, longitude || null,
         phone, email || null, website || null,
-        photos ? JSON.stringify(photos) : null,
-        plan.id, plan.code, plan.name,
-        plan.price_cents, plan.duration_days,
-        plan.features ? JSON.stringify(plan.features) : null
+        photos ? JSON.stringify(photos) : null
       ]
     );
 
-    const place = placeResult.rows[0];
-
-    await client.query('COMMIT');
-
     res.status(201).json({
-      message: 'Listing created, proceed to payment',
-      placeId: place.id,
-      plan: {
-        id: plan.id,
-        code: plan.code,
-        name: plan.name,
-        price: plan.price_cents,
-        priceDisplay: `$${(plan.price_cents / 100).toFixed(2)}`,
-        duration: plan.duration
-      },
-      place: { id: place.id, name: place.name },
-      nextStep: 'POST /api/payments/create-intent'
+      message: 'Business saved. Please select a plan.',
+      placeId: rows[0].id,
+      place: rows[0],
+      nextStep: 'POST /api/payments/create-intent with { placeId, planId }'
     });
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error('submitHalalPlace error:', err);
     res.status(500).json({ message: 'Server error', detail: err.message });
-  } finally {
-    client.release();
   }
 };
-
 // ============================================
 // 2. Get my places
 // ============================================
@@ -197,3 +159,4 @@ exports.getPublicHalalPlaces = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+

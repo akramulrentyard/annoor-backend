@@ -36,7 +36,6 @@ enum ListingStatus {
   @@map("listing_status")
 }
 
-// ⬇️ NEW: Subscription action log
 enum SubscriptionAction {
   created
   renewed
@@ -54,12 +53,13 @@ enum SubscriptionAction {
 // ═══════════════════════════════════════════════
 
 model User {
-  id            Int      @id @default(autoincrement())
-  name          String
-  email         String   @unique
-  passwordHash  String   @map("password_hash")
-  role          UserRole @default(user)
-  createdAt     DateTime @default(now()) @map("created_at")
+  id               Int      @id @default(autoincrement())
+  name             String
+  email            String   @unique
+  passwordHash     String?  @map("password_hash") // ✅ nullable for OTP login
+  stripeCustomerId String?  @map("stripe_customer_id") // ✅ kept (was in DB, not in old schema)
+  role             UserRole @default(user)
+  createdAt        DateTime @default(now()) @map("created_at")
 
   // Relations
   masjidProfile        MasjidProfile?
@@ -69,7 +69,7 @@ model User {
   payments             Payment[]
   createdPlans         Plan[]          @relation("PlanCreator")
   updatedPlans         Plan[]          @relation("PlanUpdater")
-  subscriptionsCreated Subscription[]  @relation("SubscriptionCreator")   // ⬅️ NEW
+  subscriptionsCreated Subscription[]  @relation("SubscriptionCreator")
 
   @@map("users")
 }
@@ -112,8 +112,14 @@ model OtpCode {
   expiresAt DateTime @map("expires_at")
   createdAt DateTime @default(now()) @map("created_at")
 
+  @@index([email])
+  @@index([expiresAt])
   @@map("otp_codes")
 }
+
+// ═══════════════════════════════════════════════
+// DYNAMIC PLANS
+// ═══════════════════════════════════════════════
 
 model Plan {
   id          Int     @id @default(autoincrement())
@@ -123,24 +129,24 @@ model Plan {
   priceCents  Int     @map("price_cents")
   currency    String  @default("USD")
 
-  // Flexible duration (in days)
-  durationDays Int    @map("duration_days")
+  // Flexible duration
+  durationDays Int @map("duration_days")
 
   features Json?
 
   isActive   Boolean @default(true) @map("is_active")
   isFeatured Boolean @default(false) @map("is_featured")
-  sortOrder  Int     @default(0) @map("sort_order")
 
   // Auto-renewal (default ON)
   autoRenewEnabled Boolean @default(true) @map("auto_renew_enabled")
 
+  sortOrder Int       @default(0) @map("sort_order")
   deletedAt DateTime? @map("deleted_at")
 
   createdBy Int?     @map("created_by")
   updatedBy Int?     @map("updated_by")
   createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @default(now()) @map("updated_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   // Relations
   creator       User?          @relation("PlanCreator", fields: [createdBy], references: [id])
@@ -152,6 +158,10 @@ model Plan {
   @@index([code])
   @@map("plans")
 }
+
+// ═══════════════════════════════════════════════
+// HALAL PLACES (Business Listings)
+// ═══════════════════════════════════════════════
 
 model HalalPlace {
   id          Int     @id @default(autoincrement())
@@ -176,7 +186,7 @@ model HalalPlace {
   // Media
   photos Json?
 
-  // Plan snapshot (frozen at purchase)
+  // Plan snapshot (frozen at purchase time)
   planId         Int?    @map("plan_id")
   planCode       String? @map("plan_code")
   planName       String? @map("plan_name")
@@ -184,9 +194,11 @@ model HalalPlace {
   planDuration   Int?    @map("plan_duration")
   planFeatures   Json?   @map("plan_features")
 
-  // ⬇️ Auto-renewal
+  // Auto-renewal
   autoRenewEnabled     Boolean   @default(true) @map("auto_renew_enabled")
   autoRenewCancelledAt DateTime? @map("auto_renew_cancelled_at")
+  renewedAt            DateTime? @map("renewed_at")
+  renewalCount         Int       @default(0) @map("renewal_count")
 
   // Status
   status          ListingStatus @default(pending_payment)
@@ -196,12 +208,8 @@ model HalalPlace {
   approvedBy      Int?          @map("approved_by")
   expiresAt       DateTime?     @map("expires_at")
 
-  // ⬇️ Renewal tracking
-  renewedAt    DateTime? @map("renewed_at")
-  renewalCount Int       @default(0) @map("renewal_count")
-
   createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @default(now()) @map("updated_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   // Relations
   owner         User           @relation("OwnerPlaces", fields: [ownerId], references: [id], onDelete: Cascade)
@@ -215,8 +223,13 @@ model HalalPlace {
   @@index([city])
   @@index([ownerId])
   @@index([planId])
+  @@index([expiresAt, autoRenewEnabled]) // ✅ NEW: renewal query
   @@map("halal_places")
 }
+
+// ═══════════════════════════════════════════════
+// PAYMENTS (Stripe PaymentIntent)
+// ═══════════════════════════════════════════════
 
 model Payment {
   id      Int  @id @default(autoincrement())
@@ -224,22 +237,34 @@ model Payment {
   placeId Int? @map("place_id")
   planId  Int? @map("plan_id")
 
+  // Plan snapshot
   planCode String? @map("plan_code")
   planName String? @map("plan_name")
 
   amount   Decimal @db.Decimal(10, 2)
   currency String  @default("USD")
 
+  // pending | succeeded | failed | refunded
   status String @default("pending")
 
-  // Stripe PaymentIntent
+  // ═══════════════════════════════════════════════
+  // Stripe fields
+  // ═══════════════════════════════════════════════
   stripeSessionId     String? @unique @map("stripe_session_id")
   stripePaymentIntent String? @map("stripe_payment_intent")
   clientSecret        String? @map("client_secret")
-  metadata            Json?
+
+  // ✅ Auto-renewal support
+  stripeCustomerId      String?   @map("stripe_customer_id")
+  stripePaymentMethodId String?   @map("stripe_payment_method_id")
+  isRenewal             Boolean   @default(false) @map("is_renewal")
+  paidAt                DateTime? @map("paid_at")
+  expiresAt             DateTime? @map("expires_at")
+
+  metadata Json?
 
   createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @default(now()) @map("updated_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   // Relations
   user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -249,10 +274,15 @@ model Payment {
   @@index([placeId])
   @@index([status])
   @@index([stripePaymentIntent])
+  @@index([expiresAt, isRenewal]) // ✅ NEW
+  @@index([stripeCustomerId]) // ✅ NEW
   @@map("payments")
 }
 
-// ⬇️ NEW: Subscription history/audit
+// ═══════════════════════════════════════════════
+// SUBSCRIPTIONS (Audit Trail)
+// ═══════════════════════════════════════════════
+
 model Subscription {
   id           Int                @id @default(autoincrement())
   placeId      Int                @map("place_id")
@@ -276,5 +306,6 @@ model Subscription {
   @@index([placeId])
   @@index([action])
   @@index([createdAt])
+  @@index([placeId, action, createdAt]) // ✅ NEW
   @@map("subscriptions")
 }
