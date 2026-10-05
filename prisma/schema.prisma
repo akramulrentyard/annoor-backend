@@ -4,13 +4,24 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  // ⚠️ url নেই — prisma.config.js-এ
 }
 
+// ENUM আপডেট — superadmin যোগ
 enum UserRole {
   user
   masjid
+  superadmin
+
   @@map("user_role")
+}
+
+// Verification status enum
+enum VerificationStatus {
+  pending
+  approved
+  rejected
+
+  @@map("verification_status")
 }
 
 model User {
@@ -22,6 +33,7 @@ model User {
   createdAt     DateTime @default(now()) @map("created_at")
 
   masjidProfile MasjidProfile?
+  verifiedMasjids MasjidProfile[] @relation("VerifiedBy")
 
   @@map("users")
 }
@@ -40,11 +52,20 @@ model MasjidProfile {
   longitude     Decimal? @db.Decimal(11, 8)
   isVerified    Boolean  @default(false) @map("is_verified")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // ⬇️ নতুন যোগ করুন
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  // Verification fields
+  verificationStatus VerificationStatus @default(pending) @map("verification_status")
+  verifiedBy         Int?               @map("verified_by")
+  verifiedAt         DateTime?          @map("verified_at")
+  rejectionReason    String?            @map("rejection_reason")
+
+  user           User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verifiedByUser User? @relation("VerifiedBy", fields: [verifiedBy], references: [id])
 
   @@map("masjid_profiles")
 }
-
 model OtpCode {
   id        Int      @id @default(autoincrement())
   email     String

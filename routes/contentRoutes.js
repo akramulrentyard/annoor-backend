@@ -3,35 +3,45 @@ const router = express.Router();
 const {
   protect,
   requireRole,
-  requireVerifiedMasjid
+  requireApprovedMasjid     // নতুন নাম
 } = require('../middleware/authMiddleware');
 
-// Public
+// ============================================
+// Public routes (no auth)
+// ============================================
 router.get('/public/prayer-times', (req, res) => {
   res.json({ message: 'Public prayer times' });
 });
 
+// ============================================
 // Any logged-in user
+// ============================================
 router.get('/prayer-times', protect, (req, res) => {
   res.json({ message: 'Prayer times for logged-in user' });
 });
 
+// ============================================
 // Only general users
+// ============================================
 router.get('/bookmarks', protect, requireRole('user'), (req, res) => {
   res.json({ message: 'Your personal bookmarks' });
 });
 
-// Only masjid accounts
+// ============================================
+// Only masjid accounts (basic access)
+// ============================================
 router.post('/events', protect, requireRole('masjid'), (req, res) => {
   res.json({ message: 'Event created by masjid' });
 });
 
-// Only VERIFIED masjid accounts
+// ============================================
+// Only APPROVED masjid accounts
+// ============================================
 router.post(
   '/events/publish',
   protect,
   requireRole('masjid'),
-  requireVerifiedMasjid,
+  requireApprovedMasjid,    // new middleware
   (req, res) => {
     res.json({ message: 'Event published publicly' });
   }

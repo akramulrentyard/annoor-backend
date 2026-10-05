@@ -1,7 +1,9 @@
 const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 
-// protect — JWT যাচাই করে req.user সেট করে
+// ============================================
+// protect — JWT verify + req.user set
+// ============================================
 exports.protect = (req, res, next) => {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) {
@@ -11,14 +13,16 @@ exports.protect = (req, res, next) => {
   try {
     const token = auth.split(' ')[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+    req.user = decoded; // { id, role, iat, exp }
     next();
   } catch (err) {
     return res.status(401).json({ message: 'Invalid or expired token' });
   }
 };
 
-// requireRole — নির্দিষ্ট role আছে কিনা
+// ============================================
+// requireRole — Check user's role
+// ============================================
 exports.requireRole = (...roles) => {
   return (req, res, next) => {
     if (!req.user || !roles.includes(req.user.role)) {
@@ -28,20 +32,54 @@ exports.requireRole = (...roles) => {
   };
 };
 
-// requireVerifiedMasjid — শুধু verified masjid
-exports.requireVerifiedMasjid = async (req, res, next) => {
+// ============================================
+// requireSuperAdmin — Only superadmin
+// ============================================
+exports.requireSuperAdmin = (req, res, next) => {
+  if (!req.user || req.user.role !== 'superadmin') {
+    return res.status(403).json({ message: 'Super admin access required' });
+  }
+  next();
+};
+
+// ============================================
+// requireApprovedMasjid — Only approved masjid
+// (replaces requireVerifiedMasjid)
+// ============================================
+exports.requireApprovedMasjid = async (req, res, next) => {
   try {
+    if (req.user.role !== 'masjid') {
+      return res.status(403).json({ message: 'Not a masjid account' });
+    }
+
     const { rows } = await pool.query(
-      'SELECT is_verified FROM masjid_profiles WHERE user_id = $1',
+      `SELECT verification_status, is_verified 
+       FROM masjid_profiles 
+       WHERE user_id = $1`,
       [req.user.id]
     );
 
-    if (!rows.length || !rows[0].is_verified) {
-      return res.status(403).json({ message: 'Masjid account pending verification' });
+    if (!rows.length) {
+      return res.status(404).json({ message: 'Masjid profile not found' });
     }
+
+    const { verification_status, is_verified } = rows[0];
+
+    if (verification_status !== 'approved' || !is_verified) {
+      return res.status(403).json({
+        message: 'Masjid account pending approval by super admin',
+        status: verification_status
+      });
+    }
+
     next();
   } catch (err) {
-    console.error('requireVerifiedMasjid error:', err);
+    console.error('requireApprovedMasjid error:', err);
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+// ============================================
+// requireVerifiedMasjid — Legacy (keep for backward compatibility)
+// ============================================
+exports.requireVerifiedMasjid = exports.requireApprovedMasjid;

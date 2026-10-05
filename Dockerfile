@@ -16,8 +16,6 @@ RUN npm ci --omit=dev
 
 COPY . .
 
-# ⬇️ .env baked into image (same file)
-COPY .env .env
 
 # Entrypoint
 COPY docker-entrypoint.sh /usr/local/bin/

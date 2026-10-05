@@ -48,7 +48,7 @@ const hasAnyUsers = async () => {
 // Seed initial data for testing
 // ============================================
 const seedData = async () => {
-  console.log('🌱 Seeding initial test data...');
+  console.log('Seeding initial test data...');
 
   const client = await pool.connect();
   try {
@@ -98,7 +98,7 @@ const seedData = async () => {
 // ============================================
 exports.initializeDatabase = async () => {
   console.log('');
-  console.log('🔍 Checking database...');
+  console.log('Checking database...');
 
   try {
     // Step 1: Check if "users" table exists
