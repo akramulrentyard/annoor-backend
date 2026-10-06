@@ -2,15 +2,30 @@ const pool = require('../config/db');
 const { stripe } = require('../config/stripe');
 
 // ============================================
+// CONFIG
+// ============================================
+const GRACE_PERIOD_MINUTES = 5;
+const CRON_LOG = true;
+
+// ============================================
 // Process Auto-Renewals
-// Runs daily via cron
+// Runs every 5 min via cron
+//
+// Logic:
+//   Part A: Renewal  — auto_renew=TRUE + past grace + has card
+//   Part B: Expire   — auto_renew=TRUE + past grace + NO card
+//   Part C: Expire   — auto_renew=FALSE + past expiry
 // ============================================
 exports.processAutoRenewals = async () => {
   const startedAt = Date.now();
-  console.log('');
-  console.log('═══════════════════════════════════════════════════════');
-  console.log('  🔄 AUTO-RENEWAL CRON @', new Date().toISOString());
-  console.log('═══════════════════════════════════════════════════════');
+
+  if (CRON_LOG) {
+    console.log('');
+    console.log('═══════════════════════════════════════════════════════');
+    console.log('  🔄 AUTO-RENEWAL CRON @', new Date().toISOString());
+    console.log(`  Grace period: ${GRACE_PERIOD_MINUTES} min`);
+    console.log('═══════════════════════════════════════════════════════');
+  }
 
   const client = await pool.connect();
   let renewed = 0;
@@ -20,9 +35,9 @@ exports.processAutoRenewals = async () => {
 
   try {
     // ═══════════════════════════════════════
-    // 1. Find places expiring in next 3 days with saved card
+    // PART A + B: Find places PAST GRACE with auto_renew ON
     // ═══════════════════════════════════════
-    const expiring = await client.query(`
+    const pastGrace = await client.query(`
       SELECT 
         hp.id, hp.name, hp.owner_id,
         hp.plan_id, hp.plan_code, hp.plan_name,
@@ -46,20 +61,26 @@ exports.processAutoRenewals = async () => {
         AND hp.is_active = TRUE
         AND hp.auto_renew_enabled = TRUE
         AND hp.expires_at IS NOT NULL
-        AND hp.expires_at <= NOW() + INTERVAL '3 days'
-        AND hp.expires_at > NOW()
+        AND hp.expires_at <= NOW() - INTERVAL '${GRACE_PERIOD_MINUTES} minutes'
     `);
 
-    console.log(`  📋 Found ${expiring.rows.length} places expiring soon`);
+    if (CRON_LOG) {
+      console.log(`  📋 Found ${pastGrace.rows.length} places past grace with auto_renew ON`);
+    }
 
-    const withCard = expiring.rows.filter(
+    const withCard = pastGrace.rows.filter(
       r => r.stripe_customer_id && r.stripe_payment_method_id
     );
+    const withoutCard = pastGrace.rows.filter(
+      r => !r.stripe_customer_id || !r.stripe_payment_method_id
+    );
 
-    console.log(`  💳 ${withCard.length} have saved card, ${expiring.rows.length - withCard.length} skipped`);
+    if (CRON_LOG) {
+      console.log(`  💳 ${withCard.length} with card, ${withoutCard.length} without card`);
+    }
 
     // ═══════════════════════════════════════
-    // 2. Renew each with saved card
+    // PART A: RENEW (with card)
     // ═══════════════════════════════════════
     for (const place of withCard) {
       try {
@@ -88,14 +109,16 @@ exports.processAutoRenewals = async () => {
             }
           },
           {
-            idempotencyKey: `renew_${place.id}_${new Date().toISOString().slice(0, 10)}`
+            idempotencyKey: `renew_${place.id}_${Date.now()}`
           }
         );
 
-        // New expiry
+        // New expiry = max(now, old_expiry) + duration
+        const baseDate = new Date(place.expires_at) > new Date()
+          ? new Date(place.expires_at)
+          : new Date();
         const newExpiry = new Date(
-          new Date(place.expires_at).getTime() +
-          place.plan_duration * 24 * 60 * 60 * 1000
+          baseDate.getTime() + place.plan_duration * 24 * 60 * 60 * 1000
         );
 
         // DB transaction
@@ -188,7 +211,42 @@ exports.processAutoRenewals = async () => {
     }
 
     // ═══════════════════════════════════════
-    // 3. Mark expired places
+    // PART B: EXPIRE (auto_renew ON but NO card, past grace)
+    // ═══════════════════════════════════════
+    for (const place of withoutCard) {
+      try {
+        await client.query(
+          `UPDATE halal_places SET
+            status = 'expired',
+            is_active = FALSE,
+            auto_renew_enabled = FALSE,
+            auto_renew_cancelled_at = NOW(),
+            updated_at = NOW()
+           WHERE id = $1`,
+          [place.id]
+        );
+
+        await client.query(
+          `INSERT INTO subscriptions (
+            place_id, plan_id, action, previous_plan,
+            metadata, created_by, created_at
+          ) VALUES ($1, $2, 'expired', $3, $4, $5, NOW())`,
+          [
+            place.id, place.plan_id, place.plan_code,
+            JSON.stringify({ reason: 'no_saved_card' }),
+            place.owner_id
+          ]
+        ).catch(e => console.warn('  ⚠️  Subscription log failed:', e.message));
+
+        expired++;
+        console.log(`  ⏰ Expired (no card): ${place.name}`);
+      } catch (err) {
+        console.error(`  ❌ Failed to expire ${place.name}:`, err.message);
+      }
+    }
+
+    // ═══════════════════════════════════════
+    // PART C: EXPIRE (auto_renew OFF, past expiry)
     // ═══════════════════════════════════════
     const expiredResult = await client.query(
       `UPDATE halal_places SET
@@ -197,12 +255,13 @@ exports.processAutoRenewals = async () => {
         updated_at = NOW()
        WHERE status = 'approved'
          AND is_active = TRUE
+         AND auto_renew_enabled = FALSE
          AND expires_at IS NOT NULL
          AND expires_at < NOW()
        RETURNING id, name, plan_id, plan_code, owner_id`
     );
 
-    expired = expiredResult.rows.length;
+    expired += expiredResult.rows.length;
 
     for (const p of expiredResult.rows) {
       await client.query(
@@ -215,12 +274,18 @@ exports.processAutoRenewals = async () => {
       console.log(`  ⏰ Expired: ${p.name}`);
     }
 
+    // ═══════════════════════════════════════
+    // Summary
+    // ═══════════════════════════════════════
     const duration = Date.now() - startedAt;
-    console.log('');
-    console.log(`  📊 Summary: ${renewed} renewed, ${failed} failed, ${expired} expired, ${skipped} skipped`);
-    console.log(`  ⏱  Took ${duration}ms`);
-    console.log('═══════════════════════════════════════════════════════');
-    console.log('');
+
+    if (CRON_LOG) {
+      console.log('');
+      console.log(`  📊 Summary: ${renewed} renewed, ${failed} failed, ${expired} expired, ${skipped} skipped`);
+      console.log(`  ⏱  Took ${duration}ms`);
+      console.log('═══════════════════════════════════════════════════════');
+      console.log('');
+    }
 
     return { renewed, failed, expired, skipped, duration };
 

@@ -2,21 +2,40 @@ const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 
 // ============================================
-// protect — JWT verify + req.user set
+// protect — JWT verify + user must still exist
+// Sets req.user = { id, role, iat, exp }
+// role is taken from the DB (not the token), so role changes
+// and deleted accounts take effect immediately.
 // ============================================
-exports.protect = (req, res, next) => {
+exports.protect = async (req, res, next) => {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) {
     return res.status(401).json({ message: 'No token provided' });
   }
 
+  let decoded;
   try {
     const token = auth.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // { id, role, iat, exp }
+    decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+  } catch (err) {
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({ message: 'Token expired', code: 'TOKEN_EXPIRED' });
+    }
+    return res.status(401).json({ message: 'Invalid or expired token' });
+  }
+
+  try {
+    const { rows } = await pool.query('SELECT id, role FROM users WHERE id = $1', [decoded.id]);
+
+    if (!rows.length) {
+      return res.status(401).json({ message: 'Account no longer exists' });
+    }
+
+    req.user = { ...decoded, id: rows[0].id, role: rows[0].role };
     next();
   } catch (err) {
-    return res.status(401).json({ message: 'Invalid or expired token' });
+    console.error('protect error:', err);
+    res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -53,8 +72,8 @@ exports.requireApprovedMasjid = async (req, res, next) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT verification_status, is_verified 
-       FROM masjid_profiles 
+      `SELECT verification_status, is_verified
+       FROM masjid_profiles
        WHERE user_id = $1`,
       [req.user.id]
     );

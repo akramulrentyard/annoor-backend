@@ -36,6 +36,16 @@ router.get(
 );
 
 // ═══════════════════════════════════════════
+// Delete place (with R2 photo cleanup)
+// ═══════════════════════════════════════════
+router.delete(
+  '/halal-places/:placeId',
+  protect,
+  requireRole('user'),
+  halalPlaceController.deleteHalalPlace
+);
+
+// ═══════════════════════════════════════════
 // Photo routes (R2)
 // ═══════════════════════════════════════════
 router.post(

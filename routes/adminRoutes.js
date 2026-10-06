@@ -38,6 +38,9 @@ const {
   getPlanStats
 } = require('../controllers/planController');
 
+// User management (NEW)
+const { deleteUser } = require('../controllers/adminUserController');
+
 // All admin routes require superadmin
 router.use(protect, requireSuperAdmin);
 
@@ -80,5 +83,12 @@ router.post('/halal-places/:id/reject', rejectHalalPlace);
 // ============================================
 router.get('/halal-places/:placeId/subscription', adminGetUserSubscription);
 router.patch('/halal-places/:placeId/subscription', adminUpdateSubscription);
+
+// ============================================
+// User Management (NEW)
+// Deletes a general user + their halal places/subscriptions/payments.
+// Mosques are kept.
+// ============================================
+router.delete('/users/:id', deleteUser);
 
 module.exports = router;

@@ -20,7 +20,8 @@ const masjidRoutes = require('./routes/masjidRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const halalPlaceRoutes = require('./routes/halalPlaceRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
-const subscriptionRoutes = require('./routes/subscriptionRoutes');   // 👈 NEW
+const subscriptionRoutes = require('./routes/subscriptionRoutes');
+const profileRoutes = require('./routes/profileRoutes');
 
 const app = express();
 
@@ -40,12 +41,13 @@ app.get('/', (req, res) => {
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/profile', profileRoutes);
 app.use('/api', contentRoutes);
 app.use('/api/masjid', masjidRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api', halalPlaceRoutes);
 app.use('/api/payments', paymentRoutes);
-app.use('/api/subscriptions', subscriptionRoutes);                   // 👈 NEW
+app.use('/api/subscriptions', subscriptionRoutes);
 
 // 404
 app.use((req, res) => {
@@ -62,9 +64,9 @@ app.use((err, req, res, next) => {
 // Cron Setup
 // ════════════════════════════════════════════════════════════════════
 function setupCronJobs() {
-  // প্রতিদিন রাত ২টায় (America/New_York timezone)
+  // প্রতি ৫ মিনিটে (auto-renew grace period match)
   cron.schedule(
-    '0 2 * * *',
+    '*/5 * * * *',
     async () => {
       console.log('');
       console.log('⏰ Cron triggered @', new Date().toISOString());
@@ -81,7 +83,7 @@ function setupCronJobs() {
     }
   );
 
-  console.log('⏰ Auto-renew cron scheduled (daily 2 AM America/New_York)');
+  console.log('⏰ Auto-renew cron scheduled (every 5 minutes)');
 }
 
 // Start server
@@ -92,13 +94,12 @@ const LOCAL_URL = `http://localhost:${PORT}`;
   try {
     await initializeDatabase();
 
-    // Cron চালু করুন DB ready হওয়ার পর
     setupCronJobs();
 
     app.listen(PORT, () => {
       console.log('');
       console.log('════════════════════════════════════════════════════════════');
-      console.log('🚀 Annoor Backend API is running');
+      console.log('Annoor Backend API is running');
       console.log('════════════════════════════════════════════════════════════');
       console.log(`   Environment : ${process.env.NODE_ENV}`);
       console.log(`   Port        : ${PORT}`);
@@ -108,7 +109,7 @@ const LOCAL_URL = `http://localhost:${PORT}`;
       console.log('');
     });
   } catch (err) {
-    console.error('❌ Failed to start server:', err.message);
+    console.error('Failed to start server:', err.message);
     process.exit(1);
   }
 })();
